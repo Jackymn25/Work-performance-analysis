@@ -1,0 +1,54 @@
+---
+title: "STA302 Project Model"
+author: "Jingcheng Liang & Dana Huang & Jacky Huo"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Summary, include = TRUE, message = FALSE, warning = FALSE}
+## 1) Read data (base R)
+file_path <- "work_from_home_burnout_dataset.csv"
+df <- read.csv(file_path)
+
+## 2) burnout_risk as factor + 3 dummy columns
+df$burnout_risk <- factor(df$burnout_risk, levels = c("Low", "Medium", "High"))
+
+df$risk_low <- ifelse(df$burnout_risk == "Low", 1, 0)
+df$risk_medium <- ifelse(df$burnout_risk == "Medium", 1, 0)
+df$risk_high <- ifelse(df$burnout_risk == "High", 1, 0)
+
+## 3) Keep model variables + drop NA rows (base R)
+vars <- c("task_completion_rate",
+          "work_hours", "screen_time_hours", "sleep_hours", "burnout_score",
+          "risk_low", "risk_medium", "risk_high")
+##
+df_model <- df[, vars]
+
+## 4) Fit model (NO day_type; include all 3 dummies => remove intercept)
+fit <- lm(task_completion_rate ~ work_hours + screen_time_hours + sleep_hours + burnout_score +
+            risk_low + risk_medium + risk_high - 1,
+          data = df_model)
+
+
+summary(fit)
+```
+
+
+## 5) Print exactly 3 diagnostic plots (no saving)
+
+```{r plots, include = TRUE, message = FALSE, warning = FALSE}
+plot(fit, which = 1)  # Residuals vs Fitted
+plot(fit, which = 2)  # Normal Q-Q
+
+fitted_values <- fitted(fit)
+sresidual_values <- rstandard(fit)
+
+plot(fitted_values, sresidual_values,
+     main = "Fitted vs standardized residuals",
+     xlab = "Fitted", ylab = "Standardized residuals")
+```
+
