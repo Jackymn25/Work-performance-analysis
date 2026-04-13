@@ -1,0 +1,1165 @@
+---
+title: "STA302 Final Project"
+author: "Jingcheng Liang, Dana Huang, Haozhe Huo"
+date: "2026-04-03"
+output: 
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+# hide code from main text and ajust width and height
+knitr::opts_chunk$set(
+  echo = FALSE, 
+  warning = FALSE, 
+  message = FALSE,
+  fig.width = 8,       
+  fig.height = 6,
+  fig.align = "center",
+  out.width = "100%",
+  fig.pos = "H" # Stop from floating images away
+)
+
+############################################################
+# 0. Read data safely
+############################################################
+
+possible_paths <- c(
+  "data.csv",
+  "./data.csv",
+  "data/data.csv",
+  "../data.csv",
+  "/mnt/data/data.csv"
+)
+
+existing_paths <- possible_paths[file.exists(possible_paths)]
+
+if (length(existing_paths) == 0) {
+  stop(
+    paste(
+      "CSV file not found.",
+      "Make sure 'data.csv' is in the same folder as reportInfo.Rmd,",
+      "or update possible_paths in the code."
+    )
+  )
+}
+
+data_path <- existing_paths[1]
+dat <- read.csv(data_path, stringsAsFactors = FALSE)
+
+############################################################
+# 1. Check required columns
+############################################################
+
+required_columns <- c(
+  "user_id",
+  "task_completion_rate",
+  "burnout_score",
+  "burnout_risk",
+  "work_hours",
+  "screen_time_hours",
+  "sleep_hours"
+)
+
+missing_columns <- setdiff(required_columns, names(dat))
+
+if (length(missing_columns) > 0) {
+  stop(
+    paste(
+      "The dataset is missing these required columns:",
+      paste(missing_columns, collapse = ", ")
+    )
+  )
+}
+
+############################################################
+# 2. Create variables
+############################################################
+
+dat$obs_id <- seq_len(nrow(dat))
+
+dat$burnout_score_squared <- dat$burnout_score^2
+dat$burnout_score_c <- dat$burnout_score - mean(dat$burnout_score, na.rm = TRUE)
+dat$burnout_score_c_squared <- dat$burnout_score_c^2
+
+dat$risk_Low <- ifelse(dat$burnout_risk == "Low", 1, 0)
+dat$risk_Medium <- ifelse(dat$burnout_risk == "Medium", 1, 0)
+dat$risk_High <- ifelse(dat$burnout_risk == "High", 1, 0)
+
+dat$burnout_risk_Medium <- dat$risk_Medium
+dat$burnout_risk_High <- dat$risk_High
+
+############################################################
+# 3. Fit models
+############################################################
+
+fit_linear <- lm(task_completion_rate ~ burnout_score, data = dat)
+
+fit_quadratic <- lm(
+  task_completion_rate ~ burnout_score_c + burnout_score_c_squared,
+  data = dat
+)
+
+fit_final <- lm(
+  task_completion_rate ~ burnout_score_c + burnout_score_c_squared + risk_High,
+  data = dat
+)
+
+fit_vif <- lm(
+  task_completion_rate ~ work_hours +
+    screen_time_hours +
+    sleep_hours +
+    burnout_score_c +
+    burnout_score_c_squared +
+    burnout_risk_Medium +
+    burnout_risk_High,
+  data = dat
+)
+
+############################################################
+# 4. Helper functions
+############################################################
+
+compute_vif <- function(fit) {
+  X <- model.matrix(fit)
+  
+  if ("(Intercept)" %in% colnames(X)) {
+    X <- X[, colnames(X) != "(Intercept)", drop = FALSE]
+  }
+  
+  vif_values <- numeric(ncol(X))
+  names(vif_values) <- colnames(X)
+  
+  for (j in seq_len(ncol(X))) {
+    response_j <- X[, j]
+    predictor_j <- X[, -j, drop = FALSE]
+    
+    fit_j <- lm(response_j ~ predictor_j)
+    r2_j <- summary(fit_j)$r.squared
+    vif_values[j] <- 1 / (1 - r2_j)
+  }
+  
+  vif_values
+}
+
+interpret_correlation <- function(r_value) {
+  abs_r <- abs(r_value)
+  
+  if (abs_r >= 0.7) {
+    return("Strong")
+  } else if (abs_r >= 0.3) {
+    return("Moderate")
+  } else {
+    return("Weak")
+  }
+}
+
+safe_percent <- function(num, den) {
+  if (den == 0) {
+    return(NA_real_)
+  } else {
+    return(round(100 * num / den, 1))
+  }
+}
+
+draw_correlation_heatmap <- function(cor_mat, main_title) {
+  original_mat <- cor_mat
+  display_mat <- original_mat[nrow(original_mat):1, , drop = FALSE]
+  
+  n_row <- nrow(display_mat)
+  n_col <- ncol(display_mat)
+  
+  heat_colors <- colorRampPalette(c("steelblue3", "white", "firebrick3"))(201)
+  zlim <- c(-1, 1)
+  
+  old_par <- par(no.readonly = TRUE)
+  par(mar = c(10, 12, 4, 2))
+  
+  image(
+    x = seq_len(n_col),
+    y = seq_len(n_row),
+    z = t(display_mat),
+    col = heat_colors,
+    zlim = zlim,
+    xaxt = "n",
+    yaxt = "n",
+    xlab = "",
+    ylab = "",
+    main = main_title
+  )
+  
+  axis(
+    1,
+    at = seq_len(n_col),
+    labels = colnames(original_mat),
+    las = 2
+  )
+  
+  axis(
+    2,
+    at = seq_len(n_row),
+    labels = rev(rownames(original_mat)),
+    las = 1
+  )
+  
+  for (i in seq_len(n_row)) {
+    for (j in seq_len(n_col)) {
+      text(j, i, labels = sprintf("%.3f", display_mat[i, j]), cex = 0.8)
+    }
+  }
+  
+  box()
+  par(old_par)
+}
+```
+
+\newpage
+# Section 1: Introduction
+The increasing trend of work-from-home (WFH) arrangements has changed how employees manage their daily work and performance. In the case of work-from-home, productivity is often measured by accomplishment of work deliverables, for example, the rate of task accomplishment. At the same time, WFH can influence the extent of digital connectivity, screen exposure, and the interface between work and rest, which can affect fatigue levels.  In turn, performance is affected.
+
+Empirical research supports the existence of an integrated mechanism that can connect the factors of sleep, fatigue, digital connectivity, and work hours to work performance within the work environment. A PRISMA-based systematic review on digital connectivity concludes that prolonged connectivity and screen-heavy work are associated with burnout/digital fatigue and sleep disturbances, implying that screen time may contribute to fatigue directly and indirectly through disrupted sleep, which can undermine performance (Bondanini et al., 2025). Additionally, the occupational perspective on work hours and productivity is commonly characterized by an inverted U-shaped relationship, indicating that the relationship between work hours and productivity increases until a specific point before declining when work hours are excessive, which is similar to the effect of fatigue on work efficiency (Kang, 2024). Classic fatigue research similarly emphasizes the effect of fatigue on efficiency, indicating that the experience of fatigue can reduce efficiency and productivity (Hutchins, 1913).
+
+Some knowledge gaps exist. In work-from-home arrangements, how are sleep time, use of screen, burnout, and work time specifically affecting task completion? We hypothesize that more sleep is associated with higher task completion, while greater fatigue, more screen time, and longer work hours are associated with lower task completion. As a baseline for our initial model, we hypothesize that these predictors follow a simple linear relationship with task completion, though we will also test for non-linear effects as suggested by the literature.
+
+Multiple linear regression is suitable because task completion rate is continuous and we want to estimate the adjusted association between task completion and multiple predictors (sleep, screen time, burnout/fatigue, and work hours) at the same time. The model is mainly for interpretability, so coefficients can be read as the expected change in task completion when one predictor changes while others are held constant.
+
+\newpage
+# Section 2: Data Description
+```{r Summary, include = FALSE, message = FALSE, warning = FALSE}
+# last modified 2026/2/6 3pm
+# please dont change the vars here!
+
+filename = "data.csv"
+labels = c("Low", "Medium", "High")
+c1 = "Low"
+c2 = "Medium"
+c3 = "High"
+
+df <- read.csv(filename)
+# # table(df)
+# summary(df)
+
+# Data cleaning & subseting
+
+# first we expand category to 3 columns which only indicates yes or no(1, 0)
+df$burnout_risk <- factor(df$burnout_risk, levels=labels)
+# summary(df$burnout_risk)
+df$risk_low <- ifelse(df$burnout_risk == c1, 1, 0)
+df$risk_medium <- ifelse(df$burnout_risk == c2, 1, 0)
+df$risk_high <- ifelse(df$burnout_risk == c3, 1, 0)
+
+# the predictors we want as described in Data description section
+vars <- c("task_completion_rate",
+          "work_hours", "screen_time_hours", "sleep_hours", "burnout_score",
+          "risk_low", "risk_medium", "risk_high")
+
+# we try to check missing values in those features, surprise this is similar 
+# to py pandas
+which(is.na(df[, vars]))
+
+# we found theres no NA 
+# reference to this page https://www.statology.org/r-find-missing-values/
+
+# select the columns we want(subseting)
+df_model = df[, vars]
+# summary(df_model)
+
+# Fit model using lm
+fit <- lm(task_completion_rate ~ work_hours + 
+            screen_time_hours + 
+            sleep_hours + 
+            burnout_score +
+            risk_low + risk_medium + risk_high - 1, data = df_model)
+# -1 is important here as we need to have different pere for those dummy
+summary(fit)
+```
+
+This research project employs the Work From Home (WFH) Employee Burnout Dataset, a synthetic daily-level dataset created to mimic realistic WFH behaviors and burnout patterns (Shinde, 2026) Kaggle. Each row represents one day of a user’s work activity, with variables describing workload intensity, digital exposure, recovery behaviors, and burnout. The dataset was originally designed to investigate burnout in remote work settings; in contrast, we repurpose it to examine how WFH-related factors are associated with task_completion_rate in a regression framework. The curator states the data are synthetic and provides no additional collection methodology beyond this provenance statement (Shinde, 2026).
+
+**Figure 2.1**
+```{r figure_2_1, include = TRUE, message = FALSE, warning = FALSE, fig.width=4, fig.height=5, out.width="70%"}
+par(mfrow = c(2, 2))
+
+barplot(table(df$day_type),
+        main = "day_type",
+        ylab = "Count")
+
+boxplot(df$work_hours,
+        main = "work_hours")
+
+boxplot(df$screen_time_hours,
+        main = "screen_time_hours")
+
+boxplot(df$meetings_count,
+        main = "meetings_count")
+
+par(mfrow = c(4, 4))
+```
+\newpage
+**Figure 2.2**
+```{r figure_2_2, include = TRUE, message = FALSE, warning = FALSE, fig.width=4, fig.height=4, out.width="80%"}
+par(mfrow = c(2, 2))
+
+boxplot(df$breaks_taken,
+        main = "breaks_taken")
+
+barplot(table(df$after_hours_work),
+        main = "after_hours_work",
+        ylab = "Count")
+
+boxplot(df$sleep_hours,
+        main = "sleep_hours")
+
+boxplot(df$task_completion_rate,
+        main = "task_completion_rate")
+
+par(mfrow = c(1, 1))
+```
+
+The response variable used in the model is task_completion_rate, which refers to the rate at which users were able to complete planned tasks in a single day. As shown in Figure 2 above, the response variable ranges from 40.0 to 107.2 with a median of 74.5 and a mean of 72.31. The distribution appears to be nearly continuous with a moderate level of spread, suggesting that 
+modeling the conditional mean using linear regression should be appropriate.
+
+**Figure 2.3**
+```{r figure_2_3, include = TRUE, message = FALSE, warning = FALSE, fig.width=4, fig.height=3, out.width="80%"}
+par(mfrow = c(1, 2))
+
+boxplot(df$burnout_score,
+        main = "burnout_score")
+
+barplot(table(df$burnout_risk),
+        main = "burnout_risk",
+        ylab = "Count")
+
+par(mfrow = c(1, 1))
+```
+
+Predictors (Figures 2.1-2.3) include work_hours (3.00-12.17; median 6.45), screen_time_hours (4.51-15.70; median 9.21), sleep_hours (4.50-10.80; median 6.99; IQR 6.28-7.75), burnout_score (2.50-143.92; median 39.27; IQR 25.37-58.20), and categorical burnout_risk (84.83% Low, 14.06% Medium, 1.11% High). Most predictors show moderate spread with no obvious extreme values, except for the right-tailed burnout_score and the imbalanced burnout_risk. 
+
+**Figure 2.4**
+```{r fig.width=5, fig.height=4, out.width="80%"}
+############################################################
+# Figure 2.4
+############################################################
+
+par(mar = c(5, 5, 4, 2))
+
+plot(dat$burnout_score,
+     dat$task_completion_rate,
+     pch = 16,
+     cex = 0.6,
+     col = rgb(0, 0, 0, 0.15),
+     xlab = "Burnout score",
+     ylab = "Task completion rate",
+     main = "Figure 2.4 Task completion rate versus burnout score")
+
+bin_breaks <- seq(0, 150, by = 25)
+bin_group <- cut(dat$burnout_score,
+                 breaks = bin_breaks,
+                 include.lowest = TRUE,
+                 right = FALSE)
+
+for (current_bin in levels(bin_group)) {
+  bin_index <- which(bin_group == current_bin)
+  
+  if (length(bin_index) > 0) {
+    x_min_bin <- min(dat$burnout_score[bin_index], na.rm = TRUE)
+    x_max_bin <- max(dat$burnout_score[bin_index], na.rm = TRUE)
+    y_mean_bin <- mean(dat$task_completion_rate[bin_index], na.rm = TRUE)
+    
+    segments(x0 = x_min_bin,
+             y0 = y_mean_bin,
+             x1 = x_max_bin,
+             y1 = y_mean_bin,
+             lwd = 2,
+             col = "gray35")
+  }
+}
+
+x_grid <- seq(min(dat$burnout_score, na.rm = TRUE),
+              max(dat$burnout_score, na.rm = TRUE),
+              length.out = 400)
+
+pred_linear <- predict(
+  fit_linear,
+  newdata = data.frame(burnout_score = x_grid)
+)
+
+pred_quadratic <- predict(
+  fit_quadratic,
+  newdata = data.frame(
+    burnout_score_c = x_grid - mean(dat$burnout_score, na.rm = TRUE),
+    burnout_score_c_squared = (x_grid - mean(dat$burnout_score, na.rm = TRUE))^2
+  )
+)
+
+lines(x_grid, pred_quadratic, col = "royalblue4", lwd = 3)
+lines(x_grid, pred_linear, col = "royalblue4", lwd = 2, lty = 2)
+
+legend("topright",
+       legend = c("Quadratic fit", "Linear fit"),
+       col = c("royalblue4", "royalblue4"),
+       lwd = c(3, 2),
+       lty = c(1, 2),
+       bty = "n")
+```
+These predictors align with evidence linking digital connectivity to fatigue/sleep disruption and fatigue to reduced performance (Bondanini et al., 2025; Hutchins, 1913), with work hours potentially showing nonlinearity (Kang, 2024). Figure 4 shows a clear negative pattern between task_completion_rate and burnout_score, supporting burnout_score as a key predictor. These predictors are connected to fatigue and its effects on employee performance (Hutchins, 1913) and to potential nonlinearity in work hours–productivity relationships (Kang, 2024).
+
+\newpage
+# Section 3: Preliminary results
+```{r figure_3_1, include = TRUE, message = FALSE, warning = FALSE}
+name_Fitted_standardized = "Fitted vs standardized residuals"
+x = "Fitted"
+y = "Standardized residuals"
+
+par(mfrow = c(1, 3))
+
+# Residuals vs Fitted plot for linear and homo..
+plot(fit, which = 1)
+
+# Normal Q-Q for standarded
+plot(fit, which = 2)
+
+fitted_values <- fitted(fit)
+sresidual_values <- rstandard(fit)
+
+plot(fitted_values, sresidual_values,
+     main = name_Fitted_standardized,
+     xlab = x,ylab = y)
+
+par(mfrow = c(1, 1))
+```
+## Part I Residual analysis
+
+Residual diagnostics were presented as a single grid figure(Figure 3.1). Linearity was assessed using mainly Residuals vs Fitted: the V-shaped structure at low fitted values and the non-flat trend indicate some violation of linearity in that region. Constant variance was assessed by the changing spread of residuals across fitted values; dispersion differs near the low-fitted region, suggesting some evidence of Non-homoscedasticity. Normality was assessed via the Q–Q plot: points follow the reference line closely, with minor deviation in tails, indicating evidence of normality. I plan to address multicollinearity by applying appropriate transformations to highly correlated variables and, when necessary, removing or retaining predictors based on their theoretical importance, VIF values, and overall model stability.
+
+## Part II Model
+
+We fit a preliminary multiple linear regression model
+\newline
+$$\hat{y} = -0.162WH + 0.102ST + 0.093SL - 0.642BS + 99.657I_L + 100.902I_M + 118.222I_H$$
+\newline
+For $task\_completion\_rate$ using five predictors motivated by literature. Model fit was extremely high ($R^2 = 0.9973$). The strongest numerical effect was $burnout\_score$: the estimated slope was -0.642, implying one-unit increase in $burnout\_score$ corresponds to an estimated average of 0.642 point decrease in task completion ($t = -106.253, p < 2e-16$), holding other predictors constant. In contrast, $work\_hours$ (-0.162), $screen\_time\_hours$ (0.102), and $sleep\_hours$ (0.093) were not statistically distinguishable from zero in this case ($p = 0.218, 0.419, 0.274$, respectively). For the categorical predictor $burnout\_risk$, the group-specific intercepts were 99.66 (Low), 100.90 (Medium), and 118.22 (High); because these are intercept-like terms under no-intercept coding, they are best used to compare risk groups rather than as standalone values.
+
+In a work-from-home (WFH) setting, we modeled how sleep, screen exposure, burnout, and work hours relate to daily task completion. Key evidence is the preliminary regression: burnout_score has a strong negative adjusted effect on task_completion_rate (β = −0.642, p < 2e−16), while linear terms for sleep_hours, screen_time_hours, and work_hours are weak (p = 0.274, 0.419, 0.218). This supports the burnout hypothesis and aligns with Hutchins(1913). Differences for sleep/screen/hours are plausible because their effects may be indirect via burnout (Bondanini 2025) or nonlinear (e.g., inverted-U hours; Kang 2024); high burnout_risk is 18.56 points above Low, but rarity and synthetic coupling may bias this contrast.
+
+\newpage
+# Section 4: Model Selection
+
+```{r}
+# data
+d <- read.csv("data.csv", stringsAsFactors = FALSE)
+
+need <- c(
+  "user_id",
+  "task_completion_rate",
+  "burnout_score",
+  "burnout_risk",
+  "work_hours",
+  "screen_time_hours",
+  "sleep_hours"
+)
+
+if (any(!(need %in% names(d)))) {
+  stop("Missing columns in data.csv")
+}
+
+# vars
+d$id <- 1:nrow(d)
+
+d$burnout_score_squared <- d$burnout_score^2
+d$burnout_score_c <- d$burnout_score - mean(d$burnout_score, na.rm = TRUE)
+d$burnout_score_c_squared <- d$burnout_score_c^2
+
+d$risk_Low <- ifelse(d$burnout_risk == "Low", 1, 0)
+d$risk_Medium <- ifelse(d$burnout_risk == "Medium", 1, 0)
+d$risk_High <- ifelse(d$burnout_risk == "High", 1, 0)
+
+# temp try
+# d$burnout_score_c2 <- d$burnout_score_c^2
+# d$high_flag <- ifelse(d$burnout_risk == "High", 1, 0)
+
+# fits
+fit1 <- lm(task_completion_rate ~ burnout_score, data = d)
+
+fit2 <- lm(
+  task_completion_rate ~ burnout_score_c + burnout_score_c_squared,
+  data = d
+)
+
+fit3 <- lm(
+  task_completion_rate ~ burnout_score_c + burnout_score_c_squared + risk_High,
+  data = d
+)
+
+fit4 <- lm(
+  task_completion_rate ~ work_hours +
+    screen_time_hours +
+    sleep_hours +
+    burnout_score_c +
+    burnout_score_c_squared +
+    risk_Medium +
+    risk_High,
+  data = d
+)
+
+# temp
+# fit0 <- lm(task_completion_rate ~ burnout_score_squared, data = d)
+# summary(fit0)
+```
+
+Our approach to selecting a model was to make a series of evidence-based decisions to balance fit, parsimony, and interpretability. The process involved four stages: functional form, nested predictor selection, addressing multicollinearity, and assessing the influence of influential observations on fit.
+The first decision was to transform. In the initial model, there was a systematic pattern in the Residuals vs. Fitted plot, especially for lower fitted values, instead of a random pattern around zero. This indicated that a linear fit was not sufficient. Amongst all predictor variables, burnout_score showed a strong indication of nonlinearity in its relationship with task_completion_rate, showing a declining rate as burnout score increased. A quadratic term for burnout_score was included. The decision to include a quadratic term for burnout_score was driven by the observed nonlinearity in Figure 4.1, as well as the initial indication of misspecification in the Residuals vs. Fitted Plot. After including a quadratic term for burnout_score, there was a noticeable flattening in the Residuals vs. Fitted Plot (Figure 4.2), suggesting that this predictor, along with its quadratic term, should be included in all models.
+
+```{r}
+# Figure 4.1
+par(mar = c(5, 5, 4, 2))
+
+plot(
+  d$burnout_score,
+  d$task_completion_rate,
+  pch = 16,
+  cex = 0.6,
+  col = rgb(0, 0, 0, 0.15),
+  xlab = "Burnout score",
+  ylab = "Task completion rate",
+  main = "Figure 4.1. Task completion rate versus burnout score"
+)
+
+bk <- seq(0, 150, by = 25)
+gp <- cut(d$burnout_score, breaks = bk, include.lowest = TRUE, right = FALSE)
+
+for (g in levels(gp)) {
+  ix <- which(gp == g)
+  
+  if (length(ix) > 0) {
+    x0 <- min(d$burnout_score[ix], na.rm = TRUE)
+    x1 <- max(d$burnout_score[ix], na.rm = TRUE)
+    ym <- mean(d$task_completion_rate[ix], na.rm = TRUE)
+    
+    segments(x0, ym, x1, ym, lwd = 2, col = "gray35")
+  }
+}
+
+xx <- seq(
+  min(d$burnout_score, na.rm = TRUE),
+  max(d$burnout_score, na.rm = TRUE),
+  length.out = 400
+)
+
+yy1 <- predict(fit1, newdata = data.frame(burnout_score = xx))
+
+yy2 <- predict(
+  fit2,
+  newdata = data.frame(
+    burnout_score_c = xx - mean(d$burnout_score, na.rm = TRUE),
+    burnout_score_c_squared = (xx - mean(d$burnout_score, na.rm = TRUE))^2
+  )
+)
+
+lines(xx, yy2, col = "royalblue4", lwd = 3)
+lines(xx, yy1, col = "royalblue4", lwd = 2, lty = 2)
+
+legend(
+  "topright",
+  legend = c("Quadratic fit", "Linear fit"),
+  col = c("royalblue4", "royalblue4"),
+  lwd = c(3, 2),
+  lty = c(1, 2),
+  bty = "n"
+)
+```
+
+```{r}
+# Figure 4.2
+par(mfrow = c(2, 2), mar = c(4.5, 4.5, 3, 1), oma = c(0, 0, 3, 0))
+
+plot(
+  fitted(fit1),
+  rstandard(fit1),
+  pch = 16,
+  cex = 0.6,
+  col = rgb(0, 0, 0, 0.3),
+  xlab = "Fitted values",
+  ylab = "Standardized residuals",
+  main = "Before quadratic: Residuals vs Fitted"
+)
+abline(h = 0, lty = 2, col = "gray50")
+lines(lowess(fitted(fit1), rstandard(fit1)), col = "red", lwd = 2)
+
+plot(
+  fitted(fit2),
+  rstandard(fit2),
+  pch = 16,
+  cex = 0.6,
+  col = rgb(0, 0, 0, 0.3),
+  xlab = "Fitted values",
+  ylab = "Standardized residuals",
+  main = "After quadratic: Residuals vs Fitted"
+)
+abline(h = 0, lty = 2, col = "gray50")
+lines(lowess(fitted(fit2), rstandard(fit2)), col = "red", lwd = 2)
+
+qqnorm(
+  rstandard(fit1),
+  pch = 16,
+  cex = 0.6,
+  col = "gray60",
+  main = "Before quadratic: Normal Q-Q",
+  xlab = "Theoretical Quantiles",
+  ylab = "Standardized residuals"
+)
+qqline(rstandard(fit1), col = "red", lwd = 2)
+
+qqnorm(
+  rstandard(fit2),
+  pch = 16,
+  cex = 0.6,
+  col = "gray60",
+  main = "After quadratic: Normal Q-Q",
+  xlab = "Theoretical Quantiles",
+  ylab = "Standardized residuals"
+)
+qqline(rstandard(fit2), col = "red", lwd = 2)
+
+mtext(
+  "Figure 4.2. Residual diagnostics before and after adding the quadratic burnout term",
+  outer = TRUE,
+  cex = 1.1
+)
+
+par(mfrow = c(1, 1))
+```
+After these modifications to the functional form, we went on to carry out predictor selection. The $t$-tests for $work\_hours$, $screen\_time\_hours$, and $sleep\_hours$ were found to have low levels of association ($p = 0.399, 0.556, 0.430$, respectively). However, the terms related to burnout were still significant. Yet, elimination of a predictor was not based on a low $t$-test result. Because of possible interactions between predictors that could mask individual predictor effects, we relied more on partial $F$-tests for nested models. Removing $work\_hours$, $screen\_time\_hours$, or $sleep\_hours$ sequentially was found to have a small impact on model fit, with $\Delta R^2 < 0.00003$ for all. We then considered these predictors as a group of conceptually related predictors. $work\_hours$ and $screen\_time\_hours$ naturally belong to a group as they are related to work. They are highly correlated ($r \approx 0.954$). This relationship is shown in Figure 4.3. The inclusion of $sleep\_hours$ in this group does not change the result. Removing all three predictors at once does not result in a significant loss of fit. Because the three workload-related predictors showed weak associations and their removal caused negligible loss of fit, they were excluded. Table 4.1 and Figure 4.3 show that these variables were also strongly correlated, supporting their treatment as a related block rather than as important independent predictors.
+
+```{r}
+# Figure 4.3
+cw2 <- cor(
+  d[, c("work_hours", "screen_time_hours", "sleep_hours")],
+  use = "complete.obs"
+)
+
+mp1 <- cw2[nrow(cw2):1, , drop = FALSE]
+cl1 <- colorRampPalette(c("steelblue3", "white", "firebrick3"))(201)
+
+par(mar = c(10, 14, 4, 2))
+
+image(
+  1:ncol(mp1),
+  1:nrow(mp1),
+  t(mp1),
+  col = cl1,
+  zlim = c(-1, 1),
+  xaxt = "n",
+  yaxt = "n",
+  xlab = "",
+  ylab = "",
+  main = "Figure 4.3. Correlation heatmap for workload-related predictors"
+)
+
+axis(1, at = 1:ncol(mp1), labels = colnames(cw2), las = 2)
+axis(2, at = 1:nrow(mp1), labels = rev(rownames(cw2)), las = 1)
+
+for (i in 1:nrow(mp1)) {
+  for (j in 1:ncol(mp1)) {
+    text(j, i, sprintf("%.3f", mp1[i, j]), cex = 0.8)
+  }
+}
+
+box()
+```
+
+**Table 4.1**
+```{r}
+# table 4.1
+cw <- cor(
+  d[, c("work_hours", "screen_time_hours", "sleep_hours")],
+  use = "complete.obs"
+)
+
+table_4_1 <- data.frame(
+  Variable_1 = c("work_hours", "work_hours", "screen_time_hours"),
+  Variable_2 = c("screen_time_hours", "sleep_hours", "sleep_hours"),
+  Correlation = c(
+    cw["work_hours", "screen_time_hours"],
+    cw["work_hours", "sleep_hours"],
+    cw["screen_time_hours", "sleep_hours"]
+  ),
+  stringsAsFactors = FALSE
+)
+
+table_4_1$Correlation <- round(table_4_1$Correlation, 3)
+table_4_1$Abs_correlation <- round(abs(table_4_1$Correlation), 3)
+
+table_4_1$Interpretation <- ifelse(
+  table_4_1$Abs_correlation >= 0.7,
+  "Strong",
+  ifelse(table_4_1$Abs_correlation >= 0.3, "Moderate", "Weak")
+)
+
+knitr::kable(table_4_1)
+```
+
+The next issue was multicollinearity between the remaining predictors of burnout. Before making any adjustments, the VIFs were large for $burnout\_score$ ($22.31$), $burnout\_score^2$ ($37.11$), $risk\_Low$ ($14.79$), and $risk\_Medium$ ($5.44$), whereas those for $risk\_High$ were smaller at $3.14$. The correlation analysis revealed what was going on. $burnout\_score$ correlated very strongly with $burnout\_score^2$ ($0.961$), and all of the burnout-risk groupings correlated substantially with each other and with $burnout\_score$. This resulted in two types of redundancy: the standard redundancy of a variable and its square, and redundancy due to using a continuous burnout measure and a categorical burnout measure based on the same concept. In order to simplify the model, comparisons of nested models were conducted instead of arbitrarily deleting terms. The continuous burnout measure model, which included $burnout\_score$ and $burnout\_score^2$, was a better-fitting model than the full model of grouped risk factors. Hence, $risk\_Low$ and $risk\_Medium$ were deleted. Next, $burnout\_score$ was centered before reconstructing $burnout\_score^2$. This approach maintained the nonlinear effect of burnout but greatly reduced redundancy. The correlation between $burnout\_score$ and $burnout\_score^2$ dropped from $0.961$ to $0.553$. In addition, VIFs were greatly reduced from $18.19$ to $1.44$ for $burnout\_score$ and from $21.13$ to $2.31$ for $burnout\_score^2$. The VIF for $risk\_High$ was still low at $1.83$. This final model maintains the nonlinear effect of burnout without redundancy (Figure 4.4; Table 4.2).
+
+```{r}
+
+# Figure 4.4
+cb2 <- cor(
+  d[, c("burnout_score", "burnout_score_squared", "risk_Low", "risk_Medium", "risk_High")],
+  use = "complete.obs"
+)
+
+mp2 <- cb2[nrow(cb2):1, , drop = FALSE]
+cl2 <- colorRampPalette(c("steelblue3", "white", "firebrick3"))(201)
+
+par(mar = c(10, 12, 4, 2))
+
+image(
+  1:ncol(mp2),
+  1:nrow(mp2),
+  t(mp2),
+  col = cl2,
+  zlim = c(-1, 1),
+  xaxt = "n",
+  yaxt = "n",
+  xlab = "",
+  ylab = "",
+  main = "Figure 4.4. Correlation heatmap for burnout-related predictors"
+)
+
+axis(1, at = 1:ncol(mp2), labels = colnames(cb2), las = 2)
+axis(2, at = 1:nrow(mp2), labels = rev(rownames(cb2)), las = 1)
+
+for (i in 1:nrow(mp2)) {
+  for (j in 1:ncol(mp2)) {
+    text(j, i, sprintf("%.3f", mp2[i, j]), cex = 0.8)
+  }
+}
+
+box()
+```
+
+**Table 4.2 VIF Values**
+```{r}
+
+# table 4.2
+X <- model.matrix(fit4)
+X <- X[, colnames(X) != "(Intercept)", drop = FALSE]
+
+vv <- numeric(ncol(X))
+names(vv) <- colnames(X)
+
+for (j in 1:ncol(X)) {
+  tmp_fit <- lm(X[, j] ~ X[, -j])
+  vv[j] <- 1 / (1 - summary(tmp_fit)$r.squared)
+}
+
+table_4_2 <- data.frame(
+  Term = names(vv),
+  VIF = round(as.numeric(vv), 3),
+  stringsAsFactors = FALSE
+)
+
+table_4_2$Interpretation <- ifelse(table_4_2$VIF > 10, "High", "Low")
+
+knitr::kable(table_4_2)
+
+# diag
+n <- nrow(d)
+p <- 3
+
+rs <- rstudent(fit3)
+rz <- rstandard(fit3)
+hh <- hatvalues(fit3)
+cd <- cooks.distance(fit3)
+dfv <- dffits(fit3)
+
+cut_r <- 3
+cut_h <- 2 * (p + 1) / n
+cut_c <- 4 / n
+cut_d <- 2 * sqrt((p + 1) / n)
+
+dg <- data.frame(
+  id = d$id,
+  user_id = d$user_id,
+  burnout_score = d$burnout_score,
+  risk_High = d$risk_High,
+  fitv = fitted(fit3),
+  rz = rz,
+  rs = rs,
+  hh = hh,
+  cd = cd,
+  dfv = dfv
+)
+
+dg$out_pt <- abs(dg$rs) > cut_r
+dg$lev_pt <- dg$hh > cut_h
+dg$inf_pt <- (dg$cd > cut_c) | (abs(dg$dfv) > cut_d)
+dg$flag_pt <- dg$out_pt | dg$lev_pt | dg$inf_pt
+
+q90 <- as.numeric(quantile(d$burnout_score, 0.90, na.rm = TRUE))
+
+n_h <- sum(dg$lev_pt)
+n_f <- sum(dg$flag_pt)
+n_hh <- sum(dg$risk_High[dg$lev_pt] == 1)
+n_q <- sum(dg$burnout_score[dg$flag_pt] >= q90)
+
+# temp
+# plot(dg$hh, dg$cd)
+# plot(dg$fitv, dg$rs)
+```
+Two aspects of this selection process deserve particular mention. First, every removal was based on a direct comparison with a model containing the removed predictor: the removal of workload predictors was based on a series of repeated one-term and grouped partial F tests with negligible loss of fit. Second, every retained term served a purpose. The quadratic burnout term was retained because it corrected a misfit and because it conformed to the hierarchy principle. 
+Risk_High was retained because the tail region remained distinct even after accounting for the continuous nonlinear burnout pattern.
+We also sought to determine whether there were any observations with undue influence on the selected model. We applied a variety of diagnostics: studentized residual, hat value, Cook’s distance, and DFFITS. We found 10 residual outlier candidates (0.6%), 105 high leverage points (5.8%), 51 influential points (2.8%), and 133 points with at least one rule violated (7.4%) (Figure 4.5a; Figure 4.5b; Table 4.3). Although there were problematic observations, the issue was not a high incidence of extreme residual outliers. Rather, Figure 4.5 indicates a cluster of high leverage points, many of which were also influential. Figure 4.6 reinforces this interpretation: 99 of the 133 problematic points (74.4%) fall within the top 10% of the burnout_score distribution, suggesting a concentration of problematic points within the extreme high-burnout tail of the distribution rather than a more even distribution across the distribution. Even more extreme leverage and Cook’s distance points were heavily concentrated within the risk_High = 1 group (Figure 4.5a; Figure 4.5b)
+
+```{r figure-4-5-and-table, fig.width=12, fig.height=5.5, out.width="100%"}
+# Figure 4.5
+par(mfrow = c(1, 2), mar = c(5, 5, 4, 2))
+
+ix1 <- which(dg$lev_pt | dg$inf_pt)
+lab1 <- head(order(dg$cd, decreasing = TRUE), 10)
+
+plot(
+  dg$hh,
+  dg$cd,
+  pch = 16,
+  cex = 0.7,
+  col = "black",
+  xlab = "Leverage",
+  ylab = "Cook's distance",
+  main = "Figure 4.5a. Leverage versus Cook's distance"
+)
+
+points(
+  dg$hh[ix1],
+  dg$cd[ix1],
+  pch = 16,
+  cex = 0.8,
+  col = "red"
+)
+
+abline(v = cut_h, lty = 2)
+abline(h = cut_c, lty = 2)
+
+text(
+  dg$hh[lab1],
+  dg$cd[lab1],
+  labels = dg$id[lab1],
+  pos = 3,
+  cex = 0.8
+)
+
+ix2 <- which(dg$out_pt)
+
+plot(
+  dg$fitv,
+  dg$rs,
+  pch = 16,
+  cex = 0.7,
+  col = "black",
+  xlab = "Fitted values",
+  ylab = "Studentized residuals",
+  main = "Figure 4.5b. Studentized residuals versus fitted values"
+)
+
+abline(h = 0, col = "gray40")
+abline(h = c(-3, 3), lty = 2)
+
+points(
+  dg$fitv[ix2],
+  dg$rs[ix2],
+  pch = 16,
+  cex = 0.8,
+  col = "red"
+)
+
+text(
+  dg$fitv[ix2],
+  dg$rs[ix2],
+  labels = dg$id[ix2],
+  pos = 3,
+  cex = 0.8
+)
+
+par(mfrow = c(1, 1))
+```
+**Table 4.3**
+```{r}
+# table 4.3
+table_4_3 <- data.frame(
+  Diagnostic = c(
+    "Residual outlier candidates",
+    "High leverage cases",
+    "Influential cases",
+    "Flagged by any rule",
+    "High-leverage cases with risk_high = 1",
+    "Flagged cases in top 10% burnout region"
+  ),
+  Criterion = c(
+    "|studentized residual| > 3",
+    paste0("leverage > ", round(cut_h, 4)),
+    paste0("Cook's distance > ", round(cut_c, 4),
+           " or |DFFITS| > ", round(cut_d, 4)),
+    "At least one rule triggered",
+    "Among high-leverage cases",
+    paste0("Among flagged cases; burnout_score >= ", round(q90, 1))
+  ),
+  Count = c(
+    sum(dg$out_pt),
+    n_h,
+    sum(dg$inf_pt),
+    n_f,
+    n_hh,
+    n_q
+  ),
+  stringsAsFactors = FALSE
+)
+
+table_4_3$Percent <- c(
+  round(100 * table_4_3$Count[1] / n, 1),
+  round(100 * table_4_3$Count[2] / n, 1),
+  round(100 * table_4_3$Count[3] / n, 1),
+  round(100 * table_4_3$Count[4] / n, 1),
+  round(100 * table_4_3$Count[5] / n_h, 1),
+  round(100 * table_4_3$Count[6] / n_f, 1)
+)
+
+table_4_3$Interpretation <- c(
+  "Few unusual points",
+  "Leverage cluster shows",
+  "Some points shift fit",
+  "Check these cases",
+  "High risk appears often",
+  "Mostly high burnout"
+)
+
+knitr::kable(table_4_3)
+
+# Figure 4.6
+set.seed(302)
+yj <- jitter(dg$risk_High, amount = 0.08)
+
+ix3 <- which(dg$flag_pt)
+ix4 <- which(!dg$flag_pt)
+
+ord <- ix3[order(dg$burnout_score[ix3], decreasing = TRUE)]
+lab2 <- ord[1:min(10, length(ord))]
+
+par(mar = c(10, 12, 4, 2))
+
+plot(
+  dg$burnout_score,
+  yj,
+  type = "n",
+  xaxt = "s",
+  yaxt = "n",
+  xlab = "Burnout score",
+  ylab = "risk_High",
+  main = "Figure 4.6. Flagged cases in predictor space"
+)
+
+axis(2, at = c(0, 1), labels = c(0, 1), las = 1)
+
+points(
+  dg$burnout_score[ix4],
+  yj[ix4],
+  pch = 16,
+  cex = 0.7,
+  col = "gray70"
+)
+
+points(
+  dg$burnout_score[ix3],
+  yj[ix3],
+  pch = 16,
+  cex = 0.8,
+  col = "red"
+)
+
+text(
+  dg$burnout_score[lab2],
+  yj[lab2],
+  labels = dg$user_id[lab2],
+  pos = 3,
+  cex = 0.8
+)
+
+legend(
+  "topleft",
+  legend = c("Not flagged", "Flagged"),
+  col = c("gray70", "red"),
+  pch = 16,
+  bty = "n"
+)
+```
+
+In order to assess the need for the removal of these observations, the model is re-estimated without the observations that are considered influential. Figure 4.7 shows that removing influential observations had little effect on the burnout terms, although the risk_High estimate was more sensitive. Because the flagged cases were concentrated in the extreme high-burnout tail and did not appear to be obvious errors, they were retained. The final model includes a single transformation, excludes the weak predictors related to workload, addresses the issue of multicollinearity through centering and simplification, and includes the observations that were flagged while considering the stability of the results related to the nonlinear burnout effect.
+
+```{r}
+# Figure 4.7
+ix5 <- which(dg$inf_pt)
+
+d2 <- d[-ix5, ]
+
+fit5 <- lm(
+  task_completion_rate ~ burnout_score_c + burnout_score_c_squared + risk_High,
+  data = d2
+)
+
+ord2 <- c("risk_High", "burnout_score_c", "burnout_score_c_squared")
+
+b1 <- coef(fit3)[ord2]
+b2 <- coef(fit5)[ord2]
+
+ci1 <- confint(fit3)[ord2, , drop = FALSE]
+ci2 <- confint(fit5)[ord2, , drop = FALSE]
+
+xr <- range(c(ci1, ci2), na.rm = TRUE)
+pd <- 0.05 * diff(xr)
+xr <- xr + c(-pd, pd)
+
+yy <- c(3, 2, 1)
+
+par(mar = c(10, 12, 4, 2))
+
+plot(
+  xr,
+  c(0.5, 3.5),
+  type = "n",
+  yaxt = "n",
+  xlab = "Coefficient estimate",
+  ylab = "",
+  main = "Figure 4.7. Sensitivity analysis: full model vs removing influential observations"
+)
+
+axis(
+  2,
+  at = yy,
+  labels = c("risk_High", "burnout_score_c", "burnout_score_c_squared"),
+  las = 1
+)
+
+abline(v = 0, lty = 2)
+
+segments(ci1[, 1], yy + 0.08, ci1[, 2], yy + 0.08, lwd = 2, col = "black")
+points(b1, yy + 0.08, pch = 16, cex = 1, col = "black")
+
+segments(ci2[, 1], yy - 0.08, ci2[, 2], yy - 0.08, lwd = 2, col = "red")
+points(b2, yy - 0.08, pch = 16, cex = 1, col = "red")
+
+legend(
+  "bottomright",
+  legend = c("Full model", "After removing influential observations"),
+  col = c("black", "red"),
+  pch = 16,
+  lty = 1,
+  bty = "n"
+)
+```
+
+\newpage
+# Section 5: Final Model Inference and Results
+**Table 5.1 Final Quadratic Regression Model Estimates**
+```{r table-5-1, echo=FALSE}
+# Extract the model summary and confidence intervals
+sum_fit <- summary(fit3)
+coef_data <- sum_fit$coefficients
+ci_data <- confint(fit3)
+
+# Build the data frame
+table_5_1 <- data.frame(
+  Predictor = c(
+    "Intercept", 
+    "Centered Burnout Score", 
+    "Squared Centered Burnout", 
+    "High Burnout Risk Indicator"
+  ),
+  Estimate = round(coef_data[, 1], 4),
+  `Std. Error` = round(coef_data[, 2], 4),
+  `Lower 95% CI` = round(ci_data[, 1], 4),
+  `Upper 95% CI` = round(ci_data[, 2], 4),
+  `P-value` = ifelse(coef_data[, 4] < 0.001, "< 0.001", round(coef_data[, 4], 4)),
+  check.names = FALSE 
+)
+
+row.names(table_5_1) <- NULL
+
+knitr::kable(table_5_1)
+```
+**Table 5.2 Final Model Performance**
+```{r table-5-2, echo=FALSE}
+# Extract R^2, AIC, and BIC natively from the fit3 object
+table_5_2 <- data.frame(
+  `R-squared` = round(sum_fit$r.squared, 4),
+  `Adj. R-squared` = round(sum_fit$adj.r.squared, 4),
+  AIC = round(AIC(fit3), 3),
+  BIC = round(BIC(fit3), 3),
+  check.names = FALSE
+)
+
+knitr::kable(table_5_2)
+```
+To address our research question regarding how sleep, screen time, work hours, and burnout interact to affect daily task completion, we interpret the estimates from our finalized quadratic model. Because we centered the continuous burnout score to resolve multicollinearity in Part 4, our baseline interpretations are relative to an employee experiencing an "average" level of burnout. Starting with this baseline, the estimated intercept of $71.51$ indicates that a hypothetical employee with an exactly average burnout score who is not in the High-Risk category is expected to have a daily task completion rate of roughly $71.51\%$. From this point, the linear term ($burnout\_score\_c$) has an estimated coefficient of $-0.6445$, representing the instantaneous rate of change exactly at the mean. This means that at an average level of burnout, a one-unit increase in the burnout score is associated with an estimated $0.64\%$ decrease in task completion, assuming the risk category remains constant.
+
+This decline in performance is not strictly linear. The quadratic term ($burnout\_score\_c^2$) has a highly significant positive estimate of $0.0012$ ($p < 0.001$), giving the overall relationship a convex shape. In the context of our data, this means that as an employee's burnout becomes increasingly extreme, their task completion continues to drop, but the rate of that decline begins to slow down. Because the original burnout scale is bounded from $0$ to $100$, the mathematical vertex of this upward-opening parabola actually falls far outside the range of possible human burnout scores. Therefore, within the realistic bounds of our data, we never see task completion "bounce back" upward; we only observe a decelerating decline where the penalty for additional fatigue marginally flattens out at severe exhaustion levels.
+
+The model also retains the $risk\_High$ indicator with a coefficient of $11.77$, suggesting that being classified in the High-Risk category is associated with an $11.77\%$ increase in task completion compared to other risk groups when holding the continuous burnout score constant. However, the localized anomaly we observed in this category requires careful interpretation. It would be a major mistake to conclude that pushing employees into extreme burnout actually boosts their productivity. While it might be tempting to guess that these individuals are just rushing to finish a project at the last minute before logging off, our sensitivity analysis in Part 4 points to a purely statistical explanation. This counterintuitive positive shift is overwhelmingly driven by a small cluster of extreme outliers pulling heavily on the regression line. In real-world occupational data, such a sudden, localized spike in performance at the very extreme limit of exhaustion is highly improbable. Instead, this sudden "bump" is likely just a random mathematical artifact generated in the extreme upper tail of the distribution. Consequently, treating this positive coefficient as a reliable global effect would severely underestimate the true detrimental impact of fatigue across the broader workforce.
+
+Overall, these coefficient estimates directly answer our primary research question: task completion is overwhelmingly driven by this nonlinear relationship with burnout. Once the quadratic effect of fatigue is accounted for, specific workload and recovery metrics (like sleep and work hours) do not provide any further predictive value.
+
+In our initial proposal, we hypothesized that more sleep would be associated with higher task completion, while greater screen time, work hours, and burnout would be associated with lower task completion. Our final results strongly align with Hutchins (1913), who emphasized that fatigue directly reduces work efficiency. Both our linear and quadratic burnout (fatigue) terms are highly significant ($p < 0.001$), confirming that fatigue is the dominant negative predictor of performance in this dataset. However, our findings for the other variables differ from what we expected in our literature review of Bondanini et al. (2025) and Kang (2024). While those papers suggest that prolonged screen time and excessive work hours directly undermine performance, our nested model comparisons using partial $F$-tests in Part 4 showed that these predictors were no longer statistically significant once burnout was included.
+
+Rather than contradicting the literature, our results actually suggest a logical chain of events. As Bondanini et al. (2025) suggest, factors like heavy screen time and long work hours likely cause the burnout in the first place. However, once that burnout sets in, it is the fatigue itself that directly drives down performance. In our regression model, the $burnout\_score$ variable essentially absorbs the impact of those underlying behaviors. If our model already accounts for exactly how burnt out an employee is, knowing how many hours they stared at a screen to get to that state doesn't provide any additional predictive power. This is exactly why the workload variables dropped out during our partial $F$-tests. Even though they might cause fatigue initially, the $burnout\_score$ is what actually drives the final drop in task completion.
+
+Our final model yields an $R^2$ of $0.9366$, meaning it explains approximately $93.66\%$ of the variation in the daily task completion rate. The $Adjusted\ R^2$ is almost identical at $0.9365$, which confirms that our decision to remove the weak workload block and the redundant risk categories successfully simplified the model without overfitting to random noise. The performance metrics in Table 5.2 back this up. The Akaike Information Criterion ($AIC$) is $9896.29$ and the Bayesian Information Criterion ($BIC$) is $9923.77$. Because the $BIC$ imposes a harsher mathematical penalty for adding unnecessary variables than the $AIC$, the fact that our nested testing favored a heavily reduced specification indicates that we have achieved a highly efficient model. We successfully balanced strong explanatory power with the simplest possible predictor structure.
+
+While an $R^2$ of $93.66\%$ indicates an excellent mathematical fit, we must interpret this metric critically given the nature of behavioral data. In real-world observational studies of workplace behavior, it is practically impossible for one variable to explain almost $94\%$ of the variance in human performance. Real data contains immense unobserved noise such as daily mood, technological issues, or environmental distractions, which naturally suppresses the $R^2$ value. The fact that our model achieves a near-perfect fit is a direct mathematical consequence of the synthetic nature of the dataset discussed in Section 2. This kind of perfect alignment proves that the data was artificially simulated using a strict deterministic formula to calculate the task completion variable directly from the burnout scores. Therefore, while our model accurately reverse-engineers and captures the mathematical structure of this specific dataset, we would expect a much lower $R^2$ and significantly more variance in a true, biological human population.
+
+In conclusion, our final quadratic model directly answers our research question: daily task completion is driven almost entirely by a non-linear relationship with burnout. While factors like screen time and total work hours clearly still matter, our results show their direct impact on daily performance is fully absorbed by the fatigue they cause. By systematically simplifying our variables through these nested $F$-tests, we achieved a highly efficient model with an $Adjusted\ R^2$ of $0.9365$. However, as our analysis of the High-Risk outliers and the near-perfect fit reveals, this mathematical precision is undoubtedly an artifact of synthetic data. While our overall statistical framework remains sound, applying these exact numerical estimates to a real office environment requires explicitly acknowledging the missing variables and real-world complexities that we will explore in the next section.
+
+
+\newpage
+# Section 6: Discussion and Conclusion
+This study aims to explore the relationship between sleep time, screen time, work hours, burnout, and daily task completion in a work-from-home scenario. The key finding is that daily task completion is largely driven by burnout in this study’s data set, with non-linear effects apparent in this relationship. In the final model, more burnout is associated with less task completion, with the quadratic term for burnout indicating non-linear effects in this relationship as the rate of decline is not constant across the range of burnout scores. After accounting for this non-linear effect of burnout, predictors for workload have little direct predictive value in this study’s data set. Therefore, burnout is found to be the most important statistical predictor in this study’s data set. The final model also supports this conclusion, with high levels of significance for both the linear and quadratic terms for burnout, and an adjusted $R^2$ value of 0.9365.
+
+There are several pieces of evidence to support this conclusion. First, in the final model, the predictor for burnout is dominant, with the linear and quadratic terms for this predictor having high levels of significance and jointly defining a non-linear relationship with task completion. The linear term is negative, indicating that more burnout is associated with less task completion, while the positive quadratic term for this predictor indicates that this rate of decline is not constant across the range of scores for this predictor. The key point in this non-linear relationship is not that there is a positive effect at one or more points in this range, but that this decline is negative and levels off at extreme levels of burnout. This supports the conclusion that this non-linear effect of burnout is the primary mechanism through which changes in task completion are driven in this study’s data set, answering the research question in this way.
+
+Second, the variables related to sleep, screen time, and work hours may still matter indirectly rather than directly once the burnout effect is controlled. The selection of these variables was informed by the literature on the effects of excessive digital connectivity, excessive work hours, and lack of recovery on fatigue and efficiency. However, once the nonlinear effects of the burnout variables are included in the model, the direct effects of the workload-related predictors are seen to be weak. Moreover, these predictors can be removed from the model with minimal loss of fit.
+
+Third, the selection procedure for the best model indicates that the effect of burnout needs to be entered correctly for a stable solution. The burnout score is highly correlated with its squared term, and the burnout risk categories are highly correlated with the burnout score. Thus, the effect of the squared term is retained by centering the score before squaring it. Moreover, the effect of the redundant burnout risk categories is removed to produce a simpler model without affecting the essential relationship.
+
+A fourth result is related to the unusual pattern observed in the structure of the tail. Diagnostics indicate that the problem is not caused by a multitude of extreme residual outliers, but rather by a cluster of extreme influential points located in the extreme high-burnout region, many of which belong to the $risk\_High=1$ category. Results of sensitivity analyses indicate that removing the extreme influential points does not affect the burnout terms, although the result for the $risk\_High$ term is more sensitive. A reasonable explanation for the observed result is that the positive coefficient for the $risk\_High$ term is likely a result of a local artifact in the tail region of a synthetic data set.
+
+These results have practical implications for work-from-home scenarios. One implication is that organizations should focus on burnout rather than workload. If performance is most closely associated with fatigue state, then burnout is closely associated with productivity and should not be considered a secondary effect of performance. Organizations may benefit from prioritizing realistic deadlines, digital workload, and burnout recovery, rather than assuming more working hours will improve productivity.
+
+The second implication is that organizations should still manage factors such as screen time, working hours, and sleeping. Although not included in the final model, it does not mean these factors are irrelevant. Rather, their effects are indirect, as burnout mediates their influence on performance. In practical terms, organizations can benefit from minimizing unrequired meetings, digital workload, and working hours. This will potentially improve performance by reducing burnout accumulation.
+
+Interpretation of results should be approached cautiously due to the artificial nature of the data. The very high $R^2$ indicates that task completion in the dataset follows an exceptionally well-structured mathematical pattern. In reality, task completion in a real-world organization will depend on a variety of factors, such as task type, interruptions, job role, home conditions, motivational factors, technology problems, and family responsibilities. Since much of this variation is not present in the dataset, the model fits the data very well. The numerical values of the model should not be used in a real-world organization. The value of this research lies in methodological contributions. This paper demonstrates how regression analysis, model selection, and sensitivity analysis can be used to address a real-world problem in a principled way.
+
+Future investigations could further improve this analysis in several ways. The most important of which would be to use real observational or longitudinal work from home data. Other predictors such as occupation, deadline pressures, home working conditions, interruptions, and psychological factors could be considered. In light of model adequacy and predictive accuracy on new data, future investigations could compare different models by using a division of data sets into training and testing sets, prediction error on the testing data, and cross-validation methods such as $LOOCV$ or $K$-fold cross-validation. It would also be interesting to see if screen time, work hours, and sleep impact task completion indirectly by causing burnout.
+
+Overall, in conclusion, it seems that the final model clearly answers the initial research question. In light of the provided work from home data, daily task completion appears to be primarily a nonlinear function of burnout. Other predictors are not irrelevant, but they do not directly impact task completion. In other words, fatigue appears to be the most immediate statistical measure of a decline in daily performance, but screen time, sleep, and work hours could be impacting performance indirectly by causing burnout. In light of the artificial nature of the data and the impact of influential observations at high levels of burnout, it should be noted that exact numerical estimates should be taken cautiously. In spite of all of this, the overall analytical framework could be a good model-building approach for future investigations using real-world data.
+
+
+\newpage
+# Section 7: Author Contributions
+Jingcheng Liang, Dana Huang, and Jacky Huo contributed jointly to the overall development of the report, including topic development, data analysis planning, writing, revision, and final editing.
+
+Work on the remaining sections was distributed fairly across the group.
+
+Jingcheng Liang was primarily responsible for Section 2:  Data Description, and Section 4: Model Selection.
+
+Dana Huang was primarily responsible for Section 1: Introduction, and Section 5: Final Model Inference and Results.
+
+Jacky Huo was primarily responsible for Section 3: Preliminary Results, and Section 6: Discussion and Conclusion.
+
+# Section 8: Reference
+Bondanini, G., Giovanelli, C., Mucci, N., & Giorgi, G. (2025). The dual impact of digital connectivity: Balancing productivity and well-being in the modern workplace. International Journal of Environmental Research and Public Health, 22, 845. https://doi.org/10.3390/ijerph22060845
+
+Hutchins, B. L. (1913). Fatigue and efficiency. The Sociological Review, 6, 30–42. https://doi.org/10.1111/j.1467-954X.1913.tb02314.x
+
+Kang, M.-Y. (2024). Working hours and labour productivity from the occupational medicine perspective. Industrial Health, 62, 281–283. https://doi.org/10.2486/indhealth.2023-0191
+
+Shinde, S. (2026). Work from home employee burnout dataset [Data set]. Kaggle. Retrieved February 6, 2026, from https://www.kaggle.com/datasets/sonalshinde123/work-from-home-employee-burnout-dataset
